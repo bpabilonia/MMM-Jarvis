@@ -61,21 +61,22 @@ module.exports = NodeHelper.create({
   initPorcupine: function () {
     try {
       // Check if BuiltinKeyword is available, otherwise fallback or check structure
-      let keywordPath = BuiltinKeyword ? BuiltinKeyword.JARVIS : null;
+      let keywordPath = null;
+      
+      // Try standard v3 structure
+      if (BuiltinKeyword && BuiltinKeyword.JARVIS) {
+           keywordPath = BuiltinKeyword.JARVIS;
+      } 
+      // Fallback for some environments where it might be different
+      else if (Porcupine.BUILTIN_KEYWORDS && Porcupine.BUILTIN_KEYWORDS.JARVIS) {
+           keywordPath = Porcupine.BUILTIN_KEYWORDS.JARVIS;
+      }
 
       if (!keywordPath) {
-          // Fallback for different SDK versions where it might be directly on Porcupine or just a string
-          // In Porcupine v3, it might be BuiltinKeyword.JARVIS
-          console.log("MMM-Jarvis: Checking available keywords...");
-          if (BuiltinKeyword) {
-             keywordPath = BuiltinKeyword.JARVIS;
-          }
-      }
-      
-      if (!keywordPath) {
-          // If still null, try to find the platform-specific file manually if included (not default)
-          // Or throw error
-          throw new Error("Could not find built-in keyword JARVIS. SDK structure might differ.");
+          console.log("MMM-Jarvis: BuiltinKeyword.JARVIS not found. Checking valid keywords:", Object.keys(BuiltinKeyword || {}));
+          // If we can't find Jarvis, we can't start. But don't crash.
+          console.error("MMM-Jarvis: Error - Could not find 'Jarvis' keyword in Porcupine SDK.");
+          return; 
       }
 
       this.porcupine = new Porcupine(
