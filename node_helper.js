@@ -52,42 +52,54 @@ module.exports = NodeHelper.create({
     }
 
     console.log("MMM-Jarvis: Listening for wake word...");
-    this.micStream = recorder.record({
-      sampleRate: 16000,
-      threshold: 0,
-      verbose: false,
-      recordProgram: "rec", // Try 'rec' (sox) or 'arecord'
-      silence: "1.0",
-    });
-
-    const stream = this.micStream.stream();
     
-    let frameLength = this.porcupine.frameLength;
-    let buffer = new Int16Array(frameLength);
-    let bufferIndex = 0;
-
-    stream.on("data", (chunk) => {
-      if (this.isListening) return; // Ignore if already handling a command
-
-      // Convert buffer to Int16Array for Porcupine
-      // Chunk is likely Buffer (uint8), need to view as Int16
-      // We assume input is 16-bit linear PCM
-      
-      for (let i = 0; i < chunk.length; i += 2) {
-        if (bufferIndex >= frameLength) {
-            // Process frame
-            this.processFrame(buffer);
-            bufferIndex = 0;
-        }
-        // Read Int16 little endian
-        let val = chunk.readInt16LE(i);
-        buffer[bufferIndex++] = val;
-      }
-    });
+    // Check for microphone device. In production, you might need to specify device: 'plughw:1,0' etc.
+    // For now, we rely on default.
     
-    stream.on("error", (err) => {
-        console.error("MMM-Jarvis: Mic stream error", err);
-    });
+    try {
+        this.micStream = recorder.record({
+          sampleRate: 16000,
+          threshold: 0,
+          verbose: false,
+          recordProgram: "rec", 
+          silence: "1.0",
+        });
+    
+        const stream = this.micStream.stream();
+        
+        stream.on("data", (chunk) => {
+            // DEBUG: Uncomment to see if data is flowing
+            // console.log("Audio chunk received:", chunk.length);
+            
+            if (this.isListening) return; 
+
+            // ... existing processing ...
+            let frameLength = this.porcupine.frameLength;
+            // We need to manage our own buffer because chunks come in random sizes
+            // and Porcupine needs exactly frameLength (512)
+            
+            for (let i = 0; i < chunk.length; i += 2) {
+                if (this.audioBuffer.length >= frameLength) {
+                    // Process frame
+                    const frame = new Int16Array(this.audioBuffer.slice(0, frameLength));
+                    this.processFrame(frame);
+                    
+                    // Remove processed data
+                    this.audioBuffer = this.audioBuffer.slice(frameLength);
+                }
+                
+                // Read Int16 little endian and add to buffer
+                let val = chunk.readInt16LE(i);
+                this.audioBuffer.push(val);
+            }
+        });
+        
+        stream.on("error", (err) => {
+            console.error("MMM-Jarvis: Mic stream error", err);
+        });
+    } catch (err) {
+        console.error("MMM-Jarvis: Failed to start mic recording", err);
+    }
   },
 
   processFrame: function (frame) {
@@ -126,11 +138,10 @@ module.exports = NodeHelper.create({
     ];
     
     let recordCmd = "rec";
-    if (process.platform === "darwin") {
-        // On mac, rec (sox) works if installed. 
-        // If not, we might fail. Assuming sox is installed as per instructions.
-    }
-
+    // On Raspberry Pi/Linux, 'rec' is standard from sox.
+    // On macOS, we might need to use 'sox' with arguments if 'rec' isn't aliased, 
+    // but usually installing sox provides rec.
+    
     const recording = spawn(recordCmd, args);
     
     recording.on("close", (code) => {

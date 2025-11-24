@@ -4,13 +4,15 @@
   "description": "Magic Mirror module for Jarvis voice assistant using OpenAI",
   "main": "MMM-Jarvis.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "install-deps": "sudo apt-get install sox libsox-fmt-all mpg123"
   },
   "keywords": [
     "magic mirror",
     "voice control",
     "openai",
-    "jarvis"
+    "jarvis",
+    "raspberry pi"
   ],
   "author": "",
   "license": "MIT",
@@ -18,5 +20,12 @@
     "@picovoice/porcupine-node": "^3.0.2",
     "node-record-lpcm16": "^1.0.1",
     "openai": "^4.28.4"
-  }
+  },
+  "cpu": [
+    "arm",
+    "arm64"
+  ],
+  "os": [
+    "linux"
+  ]
 }
