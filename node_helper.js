@@ -1,36 +1,58 @@
 const NodeHelper = require("node_helper");
-const OpenAI = require("openai");
-const Porcupine = require("@picovoice/porcupine-node");
 const fs = require("fs");
 const path = require("path");
-const recorder = require("node-record-lpcm16");
 const { spawn } = require("child_process");
+
+// Lazy load dependencies to prevent crash on load if missing
+let OpenAI = null;
+let Porcupine = null;
+let recorder = null;
 
 module.exports = NodeHelper.create({
   start: function () {
-    console.log("Starting node_helper for MMM-Jarvis");
+    console.log("MMM-Jarvis: node_helper started!");
     this.porcupine = null;
     this.micStream = null;
     this.isListening = false;
     this.audioBuffer = [];
+    
+    // Attempt to load dependencies
+    try {
+        OpenAI = require("openai");
+        Porcupine = require("@picovoice/porcupine-node");
+        recorder = require("node-record-lpcm16");
+        console.log("MMM-Jarvis: Dependencies loaded successfully.");
+    } catch (e) {
+        console.error("MMM-Jarvis: Failed to load dependencies. Make sure to run 'npm install' in the module directory.", e);
+    }
   },
 
   socketNotificationReceived: function (notification, payload) {
     if (notification === "INIT") {
+      console.log("MMM-Jarvis: Received INIT configuration");
       this.config = payload;
       this.initialize();
     }
   },
 
   initialize: function () {
+    if (!OpenAI || !Porcupine || !recorder) {
+        console.error("MMM-Jarvis: Cannot initialize, dependencies are missing.");
+        return;
+    }
+
     if (!this.config.openaiKey || !this.config.picovoiceKey) {
       console.error("MMM-Jarvis: Missing OpenAI or Picovoice API Key");
       return;
     }
 
-    this.openai = new OpenAI({ apiKey: this.config.openaiKey });
-    this.initPorcupine();
-    this.startWakeWordListener();
+    try {
+        this.openai = new OpenAI({ apiKey: this.config.openaiKey });
+        this.initPorcupine();
+        this.startWakeWordListener();
+    } catch (e) {
+        console.error("MMM-Jarvis: Initialization error", e);
+    }
   },
 
   initPorcupine: function () {
@@ -53,9 +75,6 @@ module.exports = NodeHelper.create({
 
     console.log("MMM-Jarvis: Listening for wake word...");
     
-    // Check for microphone device. In production, you might need to specify device: 'plughw:1,0' etc.
-    // For now, we rely on default.
-    
     try {
         this.micStream = recorder.record({
           sampleRate: 16000,
@@ -73,24 +92,22 @@ module.exports = NodeHelper.create({
             
             if (this.isListening) return; 
 
-            // ... existing processing ...
             let frameLength = this.porcupine.frameLength;
-            // We need to manage our own buffer because chunks come in random sizes
-            // and Porcupine needs exactly frameLength (512)
             
+            // Accumulate buffer
             for (let i = 0; i < chunk.length; i += 2) {
+                // Read Int16 little endian
+                let val = chunk.readInt16LE(i);
+                this.audioBuffer.push(val);
+                
                 if (this.audioBuffer.length >= frameLength) {
-                    // Process frame
+                     // Process frame
                     const frame = new Int16Array(this.audioBuffer.slice(0, frameLength));
                     this.processFrame(frame);
                     
                     // Remove processed data
                     this.audioBuffer = this.audioBuffer.slice(frameLength);
                 }
-                
-                // Read Int16 little endian and add to buffer
-                let val = chunk.readInt16LE(i);
-                this.audioBuffer.push(val);
             }
         });
         
@@ -119,28 +136,16 @@ module.exports = NodeHelper.create({
     console.log("MMM-Jarvis: Recording command...");
     const filePath = path.join(__dirname, "command.wav");
     
-    // Using child_process to spawn 'rec' directly to record a WAV file with proper header
-    // node-record-lpcm16 is great for raw streams, but Whisper likes valid WAV headers
-    // 'rec' is from sox. 
-    // rec -r 16000 -c 1 -b 16 command.wav silence 1 0.1 3% 1 2.0 3%
-    // This records 16k, mono, 16bit, stops on silence.
-    
-    // Adjust silence parameters: 
-    // silence 1 0.1 3% (start on sound > 3% for 0.1s - ignored since we start immediately)
-    // 1 2.0 3% (stop after 2.0s of silence < 3%)
-    
     const args = [
         "-r", "16000",
         "-c", "1",
         "-b", "16",
         filePath,
-        "silence", "1", "0.1", "3%", "1", "1.5", "3%" // Trimmed to 1.5s silence
+        "silence", "1", "0.1", "3%", "1", "1.5", "3%" 
     ];
     
     let recordCmd = "rec";
     // On Raspberry Pi/Linux, 'rec' is standard from sox.
-    // On macOS, we might need to use 'sox' with arguments if 'rec' isn't aliased, 
-    // but usually installing sox provides rec.
     
     const recording = spawn(recordCmd, args);
     
