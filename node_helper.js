@@ -6,6 +6,7 @@ const { spawn } = require("child_process");
 // Lazy load dependencies to prevent crash on load if missing
 let OpenAI = null;
 let Porcupine = null;
+let BuiltinKeyword = null;
 let recorder = null;
 
 module.exports = NodeHelper.create({
@@ -19,7 +20,9 @@ module.exports = NodeHelper.create({
     // Attempt to load dependencies
     try {
         OpenAI = require("openai");
-        Porcupine = require("@picovoice/porcupine-node");
+        const PorcupineModule = require("@picovoice/porcupine-node");
+        Porcupine = PorcupineModule.Porcupine;
+        BuiltinKeyword = PorcupineModule.BuiltinKeyword;
         recorder = require("node-record-lpcm16");
         console.log("MMM-Jarvis: Dependencies loaded successfully.");
     } catch (e) {
@@ -57,9 +60,27 @@ module.exports = NodeHelper.create({
 
   initPorcupine: function () {
     try {
+      // Check if BuiltinKeyword is available, otherwise fallback or check structure
+      let keywordPath = BuiltinKeyword ? BuiltinKeyword.JARVIS : null;
+
+      if (!keywordPath) {
+          // Fallback for different SDK versions where it might be directly on Porcupine or just a string
+          // In Porcupine v3, it might be BuiltinKeyword.JARVIS
+          console.log("MMM-Jarvis: Checking available keywords...");
+          if (BuiltinKeyword) {
+             keywordPath = BuiltinKeyword.JARVIS;
+          }
+      }
+      
+      if (!keywordPath) {
+          // If still null, try to find the platform-specific file manually if included (not default)
+          // Or throw error
+          throw new Error("Could not find built-in keyword JARVIS. SDK structure might differ.");
+      }
+
       this.porcupine = new Porcupine(
         this.config.picovoiceKey,
-        [Porcupine.BUILTIN_KEYWORDS.JARVIS],
+        [keywordPath],
         [0.5]
       );
       console.log("MMM-Jarvis: Porcupine initialized");
@@ -89,6 +110,8 @@ module.exports = NodeHelper.create({
         const stream = this.micStream.stream();
         
         stream.on("data", (chunk) => {
+            if (!this.porcupine) return; // Ensure porcupine is initialized
+
              // DEBUG: Log chunk size every 50 chunks to avoid spamming but confirm liveness
              // if (Math.random() < 0.05) console.log("MMM-Jarvis: Audio chunk received:", chunk.length);
             
