@@ -1,0 +1,27 @@
+{
+  "name": "mmm-jarvis",
+  "version": "1.0.0",
+  "description": "Magic Mirror module for Jarvis voice assistant using OpenAI",
+  "main": "MMM-Jarvis.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "magic mirror",
+    "voice control",
+    "openai",
+    "jarvis"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@picovoice/porcupine-node": "^3.0.2",
+    "@picovoice/pv_recorder-node": "^2.0.3",
+    "dotenv": "^16.4.5",
+    "fs-extra": "^11.2.0",
+    "node-record-lpcm16": "^1.3.0",
+    "openai": "^4.28.4",
+    "wav": "^1.0.2"
+  }
+}
+
