@@ -76,10 +76,12 @@ module.exports = NodeHelper.create({
     console.log("MMM-Jarvis: Listening for wake word...");
     
     try {
+        // Use default mic configuration first
+        // If audio is not picked up, we may need to specify the device, e.g., 'plughw:1,0'
         this.micStream = recorder.record({
           sampleRate: 16000,
           threshold: 0,
-          verbose: false,
+          verbose: true, // Enable verbose to see if sox is actually recording in logs
           recordProgram: "rec", 
           silence: "1.0",
         });
@@ -87,8 +89,8 @@ module.exports = NodeHelper.create({
         const stream = this.micStream.stream();
         
         stream.on("data", (chunk) => {
-            // DEBUG: Uncomment to see if data is flowing
-            // console.log("Audio chunk received:", chunk.length);
+             // DEBUG: Log chunk size every 50 chunks to avoid spamming but confirm liveness
+             // if (Math.random() < 0.05) console.log("MMM-Jarvis: Audio chunk received:", chunk.length);
             
             if (this.isListening) return; 
 
@@ -114,6 +116,17 @@ module.exports = NodeHelper.create({
         stream.on("error", (err) => {
             console.error("MMM-Jarvis: Mic stream error", err);
         });
+        
+        // Specific check if process spawns correctly
+        if (this.micStream.process) {
+             this.micStream.process.on('close', (code) => {
+                 console.log(`MMM-Jarvis: Audio recording process exited with code ${code}`);
+                 if (code !== 0) {
+                     console.error("MMM-Jarvis: Audio recorder crashed. Check microphone connection.");
+                 }
+             });
+        }
+
     } catch (err) {
         console.error("MMM-Jarvis: Failed to start mic recording", err);
     }
