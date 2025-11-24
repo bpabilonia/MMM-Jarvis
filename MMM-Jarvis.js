@@ -7,7 +7,8 @@ Module.register("MMM-Jarvis", {
   },
 
   start: function () {
-    Log.log("MMM-Jarvis: Module started!");
+    console.log("MMM-Jarvis: Module start() called");
+    Log.info("MMM-Jarvis: Module started!");
     this.status = "IDLE"; // IDLE, LISTENING, PROCESSING, SPEAKING
     this.transcription = "";
     this.response = "";
