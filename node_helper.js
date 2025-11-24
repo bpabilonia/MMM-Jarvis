@@ -106,30 +106,48 @@ module.exports = NodeHelper.create({
   recordCommand: function () {
     console.log("MMM-Jarvis: Recording command...");
     const filePath = path.join(__dirname, "command.wav");
-    const fileStream = fs.createWriteStream(filePath, { encoding: "binary" });
+    
+    // Using child_process to spawn 'rec' directly to record a WAV file with proper header
+    // node-record-lpcm16 is great for raw streams, but Whisper likes valid WAV headers
+    // 'rec' is from sox. 
+    // rec -r 16000 -c 1 -b 16 command.wav silence 1 0.1 3% 1 2.0 3%
+    // This records 16k, mono, 16bit, stops on silence.
+    
+    // Adjust silence parameters: 
+    // silence 1 0.1 3% (start on sound > 3% for 0.1s - ignored since we start immediately)
+    // 1 2.0 3% (stop after 2.0s of silence < 3%)
+    
+    const args = [
+        "-r", "16000",
+        "-c", "1",
+        "-b", "16",
+        filePath,
+        "silence", "1", "0.1", "3%", "1", "1.5", "3%" // Trimmed to 1.5s silence
+    ];
+    
+    let recordCmd = "rec";
+    if (process.platform === "darwin") {
+        // On mac, rec (sox) works if installed. 
+        // If not, we might fail. Assuming sox is installed as per instructions.
+    }
 
-    const recording = recorder.record({
-      sampleRate: 16000,
-      threshold: 0.5, // Stop on silence
-      thresholdStart: null,
-      thresholdEnd: null,
-      silence: "2.0", // Stop after 2.0 seconds of silence
-      verbose: false,
-      recordProgram: "rec"
-    });
-
-    recording.stream().pipe(fileStream);
-
-    // Safety timeout in case silence detection fails
-    setTimeout(() => {
-        recording.stop();
-    }, 6000); // 6 seconds max
-
-    recording.stream().on("end", () => {
-        console.log("MMM-Jarvis: Recording finished.");
+    const recording = spawn(recordCmd, args);
+    
+    recording.on("close", (code) => {
+        console.log("MMM-Jarvis: Recording finished. Code:", code);
         this.sendSocketNotification("STATUS_UPDATE", { status: "PROCESSING" });
         this.processAudio(filePath);
     });
+    
+    recording.on("error", (err) => {
+        console.error("MMM-Jarvis: Recording error", err);
+        this.reset();
+    });
+
+    // Safety timeout
+    setTimeout(() => {
+        recording.kill();
+    }, 7000); // 7 seconds max
   },
 
   processAudio: async function (filePath) {
@@ -205,17 +223,11 @@ module.exports = NodeHelper.create({
 
         const player = spawn(command, args);
 
-        // OpenAI Node SDK .body is a web stream in some contexts, or node stream. 
-        // We need to handle it.
-        // In Node.js, mp3.body is likely a node stream or has .pipe.
-        // If not, we convert.
-        
         const bufferStream = mp3.body;
         
         if (bufferStream.pipe) {
             bufferStream.pipe(player.stdin);
         } else {
-            // If it's a Web ReadableStream (undici), we iterate
             for await (const chunk of bufferStream) {
                 player.stdin.write(Buffer.from(chunk));
             }
@@ -229,7 +241,6 @@ module.exports = NodeHelper.create({
         
         player.on("error", (err) => {
             console.error("Audio player error", err);
-            // Fallback or reset
             this.reset();
         });
 
@@ -239,6 +250,27 @@ module.exports = NodeHelper.create({
     }
   },
   
+  playAudio: function(filePath) {
+      let command = "mpg123";
+      let args = [filePath];
+      
+      if (process.platform === "darwin") {
+          command = "afplay";
+          args = [filePath];
+      }
+      
+      const player = spawn(command, args);
+      
+      player.on("close", (code) => {
+          this.sendSocketNotification("RESPONSE_END");
+          this.reset();
+      });
+      
+      player.on("error", (err) => {
+          console.error("Audio player error", err);
+          this.reset();
+      });
+  },
 
   reset: function () {
     this.isListening = false;
@@ -246,4 +278,3 @@ module.exports = NodeHelper.create({
     this.sendSocketNotification("STATUS_UPDATE", { status: "IDLE" });
   }
 });
-
