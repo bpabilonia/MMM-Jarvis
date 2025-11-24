@@ -3,10 +3,11 @@ Module.register("MMM-Jarvis", {
     picovoiceKey: "", // Required for Porcupine
     openaiKey: "", // Required for OpenAI
     wakeWord: "Jarvis", // Porcupine keyword
-    debug: false
+    debug: true
   },
 
   start: function () {
+    Log.log("MMM-Jarvis: Module started!");
     this.status = "IDLE"; // IDLE, LISTENING, PROCESSING, SPEAKING
     this.transcription = "";
     this.response = "";
@@ -49,6 +50,7 @@ Module.register("MMM-Jarvis", {
 
   socketNotificationReceived: function (notification, payload) {
     if (notification === "STATUS_UPDATE") {
+      Log.log(`MMM-Jarvis: Status update - ${payload.status}`);
       this.status = payload.status;
       if (payload.status === "LISTENING") {
         this.transcription = "";
@@ -56,6 +58,7 @@ Module.register("MMM-Jarvis", {
       }
       this.updateDom();
     } else if (notification === "TRANSCRIPTION") {
+      Log.log(`MMM-Jarvis: Transcription received - ${payload.text}`);
       this.transcription = payload.text;
       this.updateDom();
     } else if (notification === "RESPONSE_CHUNK") {
@@ -63,10 +66,12 @@ Module.register("MMM-Jarvis", {
       this.response += payload.text;
       this.updateDom();
     } else if (notification === "RESPONSE_START") {
+      Log.log("MMM-Jarvis: Response started");
       this.response = "";
       this.status = "SPEAKING";
       this.updateDom();
     } else if (notification === "RESPONSE_END") {
+      Log.log("MMM-Jarvis: Response ended");
       this.status = "IDLE";
       setTimeout(() => {
         this.transcription = "";
@@ -77,4 +82,3 @@ Module.register("MMM-Jarvis", {
     }
   }
 });
-
