@@ -12,6 +12,7 @@ Module.register("MMM-Jarvis", {
     this.status = "IDLE"; // IDLE, LISTENING, PROCESSING, SPEAKING
     this.transcription = "";
     this.response = "";
+    this.visualMode = "avatar"; // 'orb' or 'avatar'
     this.sendSocketNotification("INIT", this.config);
   },
 
@@ -28,9 +29,52 @@ Module.register("MMM-Jarvis", {
     status.innerText = this.status;
     wrapper.appendChild(status);
 
-    const circle = document.createElement("div");
-    circle.className = "jarvis-circle " + this.status.toLowerCase();
-    wrapper.appendChild(circle);
+    // Visual Container
+    let visualContainer;
+    
+    if (this.visualMode === "avatar") {
+        // AVATAR MODE
+        visualContainer = document.createElement("div");
+        visualContainer.className = "jarvis-avatar " + this.status.toLowerCase();
+        
+        const head = document.createElement("div");
+        head.className = "avatar-head";
+        
+        const eyes = document.createElement("div");
+        eyes.className = "avatar-eyes";
+        
+        const leftEye = document.createElement("div");
+        leftEye.className = "avatar-eye left";
+        const rightEye = document.createElement("div");
+        rightEye.className = "avatar-eye right";
+        
+        eyes.appendChild(leftEye);
+        eyes.appendChild(rightEye);
+        
+        const mouth = document.createElement("div");
+        mouth.className = "avatar-mouth";
+        
+        head.appendChild(eyes);
+        head.appendChild(mouth);
+        visualContainer.appendChild(head);
+        
+    } else {
+        // ORB MODE (Default)
+        visualContainer = document.createElement("div");
+        visualContainer.className = "jarvis-circle " + this.status.toLowerCase();
+    }
+    
+    wrapper.appendChild(visualContainer);
+
+    // Toggle Button
+    const toggle = document.createElement("div");
+    toggle.className = "visual-toggle";
+    toggle.innerText = this.visualMode === "orb" ? "Switch to Avatar" : "Switch to Orb";
+    toggle.addEventListener("click", () => {
+        this.visualMode = this.visualMode === "orb" ? "avatar" : "orb";
+        this.updateDom();
+    });
+    wrapper.appendChild(toggle);
 
     if (this.transcription) {
       const transcription = document.createElement("div");
