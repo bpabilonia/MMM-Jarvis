@@ -16,6 +16,7 @@ module.exports = NodeHelper.create({
     this.micStream = null;
     this.isListening = false;
     this.audioBuffer = [];
+    this.conversationHistory = []; // Store conversation context
     
     // Attempt to load dependencies
     try {
@@ -74,7 +75,6 @@ module.exports = NodeHelper.create({
 
       if (!keywordPath) {
           console.log("MMM-Jarvis: BuiltinKeyword.JARVIS not found. Checking valid keywords:", Object.keys(BuiltinKeyword || {}));
-          // If we can't find Jarvis, we can't start. But don't crash.
           console.error("MMM-Jarvis: Error - Could not find 'Jarvis' keyword in Porcupine SDK.");
           return; 
       }
@@ -96,14 +96,13 @@ module.exports = NodeHelper.create({
     }
 
     console.log("MMM-Jarvis: Listening for wake word...");
+    this.conversationHistory = []; // Reset history on new wake word session
     
     try {
-        // Use default mic configuration first
-        // If audio is not picked up, we may need to specify the device, e.g., 'plughw:1,0'
         this.micStream = recorder.record({
           sampleRate: 16000,
           threshold: 0,
-          verbose: true, // Enable verbose to see if sox is actually recording in logs
+          verbose: true, 
           recordProgram: "rec", 
           silence: "1.0",
         });
@@ -111,27 +110,20 @@ module.exports = NodeHelper.create({
         const stream = this.micStream.stream();
         
         stream.on("data", (chunk) => {
-            if (!this.porcupine) return; // Ensure porcupine is initialized
+            if (!this.porcupine) return; 
 
-             // DEBUG: Log chunk size every 50 chunks to avoid spamming but confirm liveness
-             // if (Math.random() < 0.05) console.log("MMM-Jarvis: Audio chunk received:", chunk.length);
-            
             if (this.isListening) return; 
 
             let frameLength = this.porcupine.frameLength;
             
             // Accumulate buffer
             for (let i = 0; i < chunk.length; i += 2) {
-                // Read Int16 little endian
                 let val = chunk.readInt16LE(i);
                 this.audioBuffer.push(val);
                 
                 if (this.audioBuffer.length >= frameLength) {
-                     // Process frame
                     const frame = new Int16Array(this.audioBuffer.slice(0, frameLength));
                     this.processFrame(frame);
-                    
-                    // Remove processed data
                     this.audioBuffer = this.audioBuffer.slice(frameLength);
                 }
             }
@@ -141,13 +133,9 @@ module.exports = NodeHelper.create({
             console.error("MMM-Jarvis: Mic stream error", err);
         });
         
-        // Specific check if process spawns correctly
         if (this.micStream.process) {
              this.micStream.process.on('close', (code) => {
-                 console.log(`MMM-Jarvis: Audio recording process exited with code ${code}`);
-                 if (code !== 0) {
-                     console.error("MMM-Jarvis: Audio recorder crashed. Check microphone connection.");
-                 }
+                 // console.log(`MMM-Jarvis: Audio recording process exited with code ${code}`);
              });
         }
 
@@ -163,7 +151,7 @@ module.exports = NodeHelper.create({
     if (index !== -1) {
       console.log("MMM-Jarvis: Wake word detected!");
       this.isListening = true;
-      this.micStream.stop(); // Stop wake word listener
+      this.micStream.stop(); 
       this.sendSocketNotification("STATUS_UPDATE", { status: "LISTENING" });
       this.recordCommand();
     }
@@ -182,8 +170,6 @@ module.exports = NodeHelper.create({
     ];
     
     let recordCmd = "rec";
-    // On Raspberry Pi/Linux, 'rec' is standard from sox.
-    
     const recording = spawn(recordCmd, args);
     
     recording.on("close", (code) => {
@@ -200,7 +186,7 @@ module.exports = NodeHelper.create({
     // Safety timeout
     setTimeout(() => {
         recording.kill();
-    }, 7000); // 7 seconds max
+    }, 7000); 
   },
 
   processAudio: async function (filePath) {
@@ -216,19 +202,34 @@ module.exports = NodeHelper.create({
       console.log("MMM-Jarvis: Transcription:", text);
       this.sendSocketNotification("TRANSCRIPTION", { text });
 
+      // If silence or empty, end conversation
       if (!text || text.trim().length === 0) {
+          console.log("MMM-Jarvis: No speech detected, ending conversation.");
           this.reset();
           return;
       }
+      
+      // Check for exit phrases
+      if (text.toLowerCase().includes("stop conversation") || text.toLowerCase().includes("thank you jarvis")) {
+           this.reset();
+           return;
+      }
 
-      // 2. GPT-4o-mini Streaming
+      // 2. GPT-4o-mini Streaming with Context
       console.log("MMM-Jarvis: Getting response from GPT-4o-mini...");
+      
+      // Add user message to history
+      this.conversationHistory.push({ role: "user", content: text });
+      
+      // Prepare messages payload
+      const messages = [
+          { role: "system", content: "You are Jarvis, a helpful AI assistant on a Magic Mirror. You are in a continuous conversation. Keep answers concise and conversational." },
+          ...this.conversationHistory
+      ];
+
       const stream = await this.openai.chat.completions.create({
         model: "gpt-4o-mini",
-        messages: [
-            { role: "system", content: "You are Jarvis, a helpful AI assistant on a Magic Mirror. Keep answers concise." },
-            { role: "user", content: text }
-        ],
+        messages: messages,
         stream: true,
       });
 
@@ -244,6 +245,14 @@ module.exports = NodeHelper.create({
       }
 
       console.log("MMM-Jarvis: Full response:", fullResponse);
+      
+      // Add assistant response to history
+      this.conversationHistory.push({ role: "assistant", content: fullResponse });
+      
+      // Limit history to last 10 turns to prevent token overflow
+      if (this.conversationHistory.length > 20) {
+          this.conversationHistory = this.conversationHistory.slice(this.conversationHistory.length - 20);
+      }
       
       // 3. TTS Streaming (Onyx)
       this.streamTTS(fullResponse);
@@ -288,8 +297,8 @@ module.exports = NodeHelper.create({
         }
         
         player.on("close", (code) => {
-            this.sendSocketNotification("RESPONSE_END");
-            this.reset();
+            // Continue conversation loop instead of resetting
+            this.continueConversation();
         });
         
         player.on("error", (err) => {
@@ -303,30 +312,21 @@ module.exports = NodeHelper.create({
     }
   },
   
-  playAudio: function(filePath) {
-      let command = "mpg123";
-      let args = [filePath];
+  continueConversation: function() {
+      // Start recording again for the next turn without waiting for wake word
+      console.log("MMM-Jarvis: Continuing conversation...");
+      this.sendSocketNotification("STATUS_UPDATE", { status: "LISTENING" });
       
-      if (process.platform === "darwin") {
-          command = "afplay";
-          args = [filePath];
-      }
-      
-      const player = spawn(command, args);
-      
-      player.on("close", (code) => {
-          this.sendSocketNotification("RESPONSE_END");
-          this.reset();
-      });
-      
-      player.on("error", (err) => {
-          console.error("Audio player error", err);
-          this.reset();
-      });
+      // Small delay to ensure audio output is fully cleared/stopped before mic opens
+      setTimeout(() => {
+          this.recordCommand();
+      }, 300);
   },
 
   reset: function () {
     this.isListening = false;
+    this.conversationHistory = []; // Clear history on full reset
+    this.sendSocketNotification("RESPONSE_END"); // Signal UI to go IDLE and clear text
     this.startWakeWordListener(); // Resume wake word listening
     this.sendSocketNotification("STATUS_UPDATE", { status: "IDLE" });
   }

@@ -53,10 +53,7 @@ Module.register("MMM-Jarvis", {
     if (notification === "STATUS_UPDATE") {
       Log.log(`MMM-Jarvis: Status update - ${payload.status}`);
       this.status = payload.status;
-      if (payload.status === "LISTENING") {
-        this.transcription = "";
-        this.response = "";
-      }
+      // We don't clear transcription/response here anymore to support continuous conversation context on screen
       this.updateDom();
     } else if (notification === "TRANSCRIPTION") {
       Log.log(`MMM-Jarvis: Transcription received - ${payload.text}`);
