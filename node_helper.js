@@ -254,8 +254,19 @@ module.exports = NodeHelper.create({
           return;
       }
       
+      const lowerText = text.toLowerCase().trim();
+      
+      // Filter out noise/very short transcriptions that are likely mic artifacts
+      // Common false positives: "You", "Hmm", "Uh", single words from ambient noise
+      const noisePatterns = ["you", "you.", "hmm", "uh", "um", "ah", "oh", "the", "a", "i"];
+      if (text.trim().length < 4 || noisePatterns.includes(lowerText)) {
+          console.log(`MMM-Jarvis: Filtering noise transcription: "${text}"`);
+          // Continue listening instead of resetting
+          this.continueConversation();
+          return;
+      }
+      
       // Check for exit phrases
-      const lowerText = text.toLowerCase();
       if (lowerText.includes("stop conversation") || 
           lowerText.includes("thank you jarvis") ||
           lowerText.includes("goodbye jarvis") ||
@@ -287,6 +298,7 @@ module.exports = NodeHelper.create({
         max_tokens: 150, // Limit for faster responses
       });
 
+      // Don't send SPEAKING status yet - wait until TTS actually starts playing
       this.sendSocketNotification("RESPONSE_START");
       let fullResponse = "";
       let firstChunkTime = null;
@@ -352,14 +364,9 @@ module.exports = NodeHelper.create({
 
         const bufferStream = mp3.body;
         
-        // Track when audio actually starts playing
-        let playbackStarted = false;
-        player.stdout.on('data', () => {
-            if (!playbackStarted) {
-                playbackStarted = true;
-                console.log(`MMM-Jarvis: Audio playback started (${Date.now() - ttsStart}ms from TTS start)`);
-            }
-        });
+        // Send SPEAKING status now that we're about to play audio
+        this.sendSocketNotification("STATUS_UPDATE", { status: "SPEAKING" });
+        console.log(`MMM-Jarvis: Audio playback starting (${Date.now() - ttsStart}ms from TTS start)`);
         
         // Stream audio data to player
         if (bufferStream.pipe) {
@@ -401,13 +408,13 @@ module.exports = NodeHelper.create({
       console.log("MMM-Jarvis: Continuing conversation...");
       this.sendSocketNotification("STATUS_UPDATE", { status: "LISTENING" });
       
-      // Play subtle acknowledgment tone to signal we're listening again
-      this.playAckSound();
+      // No beep here - it gets picked up by the mic and causes feedback loops
+      // User already knows they're in a conversation
       
-      // Minimal delay - just enough to prevent audio feedback
+      // Delay to ensure TTS audio is fully stopped before mic opens
       setTimeout(() => {
           this.recordCommand();
-      }, 150);
+      }, 250);
   },
 
   reset: function () {

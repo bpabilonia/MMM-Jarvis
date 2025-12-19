@@ -124,9 +124,9 @@ Module.register("MMM-Jarvis", {
         });
       }
     } else if (notification === "RESPONSE_START") {
-      Log.log("MMM-Jarvis: Response started");
+      Log.log("MMM-Jarvis: Response started (still processing, waiting for TTS)");
       this.response = "";
-      this.status = "SPEAKING";
+      // Don't set SPEAKING yet - stay in PROCESSING until audio actually plays
       this.updateDom();
     } else if (notification === "RESPONSE_END") {
       Log.log("MMM-Jarvis: Response ended");
