@@ -222,7 +222,8 @@ module.exports = NodeHelper.create({
 
     // Safety timeout - reduced from 7s to 5s for faster failover
     setTimeout(() => {
-        if (this.pendingRecording) {
+        // Only kill if this is still the same recording (not a new one)
+        if (this.pendingRecording === recording) {
             console.log("MMM-Jarvis: Recording timeout reached");
             recording.kill();
         }
