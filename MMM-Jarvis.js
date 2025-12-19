@@ -96,11 +96,13 @@ Module.register("MMM-Jarvis", {
   socketNotificationReceived: function (notification, payload) {
     if (notification === "STATUS_UPDATE") {
       Log.log(`MMM-Jarvis: Status update - ${payload.status}`);
+      const previousStatus = this.status;
       this.status = payload.status;
       
-      // Clear previous response when starting new listening phase (but keep for conversation context)
-      if (payload.status === "LISTENING" && this.status !== "IDLE") {
-        // Keep transcription visible briefly during continuous conversation
+      // Detect continuous conversation: transitioning to LISTENING from a non-IDLE state
+      if (payload.status === "LISTENING" && previousStatus !== "IDLE") {
+        // Keep transcription visible during continuous conversation
+        // (response is cleared on new TRANSCRIPTION event instead)
       }
       
       this.updateDom();
