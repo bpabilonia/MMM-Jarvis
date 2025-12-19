@@ -22,10 +22,10 @@ Module.register("MMM-Jarvis", {
 
   getDom: function () {
     const wrapper = document.createElement("div");
-    wrapper.className = "MMM-Jarvis";
+    wrapper.className = "MMM-Jarvis " + this.status.toLowerCase();
 
     const status = document.createElement("div");
-    status.className = "status";
+    status.className = "status " + this.status.toLowerCase();
     status.innerText = this.status;
     wrapper.appendChild(status);
 
@@ -97,16 +97,30 @@ Module.register("MMM-Jarvis", {
     if (notification === "STATUS_UPDATE") {
       Log.log(`MMM-Jarvis: Status update - ${payload.status}`);
       this.status = payload.status;
-      // We don't clear transcription/response here anymore to support continuous conversation context on screen
+      
+      // Clear previous response when starting new listening phase (but keep for conversation context)
+      if (payload.status === "LISTENING" && this.status !== "IDLE") {
+        // Keep transcription visible briefly during continuous conversation
+      }
+      
       this.updateDom();
     } else if (notification === "TRANSCRIPTION") {
       Log.log(`MMM-Jarvis: Transcription received - ${payload.text}`);
       this.transcription = payload.text;
+      this.response = ""; // Clear previous response when new transcription arrives
       this.updateDom();
     } else if (notification === "RESPONSE_CHUNK") {
-      // Streaming text update
+      // Streaming text update - throttle DOM updates for performance
       this.response += payload.text;
-      this.updateDom();
+      
+      // Only update DOM every few characters to reduce jank
+      if (!this._updatePending) {
+        this._updatePending = true;
+        requestAnimationFrame(() => {
+          this._updatePending = false;
+          this.updateDom();
+        });
+      }
     } else if (notification === "RESPONSE_START") {
       Log.log("MMM-Jarvis: Response started");
       this.response = "";
@@ -115,11 +129,14 @@ Module.register("MMM-Jarvis", {
     } else if (notification === "RESPONSE_END") {
       Log.log("MMM-Jarvis: Response ended");
       this.status = "IDLE";
+      // Clear text after delay when conversation truly ends
       setTimeout(() => {
-        this.transcription = "";
-        this.response = "";
-        this.updateDom();
-      }, 5000); // Clear after 5 seconds
+        if (this.status === "IDLE") { // Only clear if still idle
+          this.transcription = "";
+          this.response = "";
+          this.updateDom();
+        }
+      }, 3000); // Reduced from 5s to 3s
       this.updateDom();
     }
   }
