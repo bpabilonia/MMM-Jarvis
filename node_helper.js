@@ -273,10 +273,14 @@ module.exports = NodeHelper.create({
     
     this.realtimeWs.on("close", (code, reason) => {
       console.log(`MMM-Jarvis: Realtime WebSocket closed. Code: ${code}, Reason: ${reason}`);
-      this.realtimeConnected = false;
-      // Perform full cleanup regardless of how the connection closed (normal, error, or timeout)
-      this.cleanupRealtimeSession();
-      this.reset();
+      // Only perform cleanup if this wasn't triggered by our own cleanupRealtimeSession() call
+      // When we initiate cleanup, realtimeWs is set to null before the close event fires
+      if (this.realtimeWs !== null) {
+        this.realtimeConnected = false;
+        // Perform full cleanup for unexpected closes (server disconnect, timeout, etc.)
+        this.cleanupRealtimeSession();
+        this.reset();
+      }
     });
   },
   
@@ -395,8 +399,8 @@ module.exports = NodeHelper.create({
           const audioData = Buffer.from(event.delta, "base64");
           this.audioChunks.push(audioData);
           
-          // Start playback if we have enough data
-          if (this.audioChunks.length === 1) {
+          // Start playback if no player is active (first chunk or after player failure)
+          if (!this.audioPlayer) {
             this.sendSocketNotification("STATUS_UPDATE", { status: "SPEAKING" });
             this.startAudioPlayback();
           }
@@ -415,6 +419,9 @@ module.exports = NodeHelper.create({
       case "error":
         console.error("MMM-Jarvis: Realtime API error:", event.error);
         this.sendSocketNotification("STATUS_UPDATE", { status: "ERROR" });
+        // Clean up and reset on API errors, consistent with standard mode behavior
+        this.cleanupRealtimeSession();
+        this.reset();
         break;
         
       case "rate_limits.updated":
