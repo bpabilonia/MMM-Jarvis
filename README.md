@@ -85,7 +85,7 @@ Uses OpenAI's Realtime API for ultra-low-latency speech-to-speech conversations:
         picovoiceKey: "YOUR_PICOVOICE_ACCESS_KEY",
         wakeWord: "Jarvis",
         useRealtimeAPI: true,
-        realtimeModel: "gpt-realtime",
+        realtimeModel: "gpt-4o-realtime-preview-2024-12-17",
         realtimeVoice: "ash"
     }
 }

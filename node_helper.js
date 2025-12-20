@@ -27,7 +27,6 @@ module.exports = NodeHelper.create({
     this.realtimeStreamingMic = null;
     this.audioPlayer = null;
     this.audioChunks = [];
-    this.responseInProgress = false; // Track if a response is actively being generated
     
     // Attempt to load dependencies
     try {
@@ -376,7 +375,6 @@ module.exports = NodeHelper.create({
         
       case "response.created":
         console.log("MMM-Jarvis: Response started");
-        this.responseInProgress = true;
         this.sendSocketNotification("RESPONSE_START");
         this.audioChunks = [];
         break;
@@ -415,7 +413,6 @@ module.exports = NodeHelper.create({
         
       case "response.done":
         console.log("MMM-Jarvis: Response complete");
-        this.responseInProgress = false;
         // Audio playback will continue, then we'll be ready for next input
         break;
         
@@ -531,10 +528,9 @@ module.exports = NodeHelper.create({
     
     this.audioChunks = [];
     
-    // Cancel any in-progress response (only if one is actually active)
-    if (this.realtimeConnected && this.responseInProgress) {
+    // Cancel any in-progress response
+    if (this.realtimeConnected) {
       this.sendRealtimeEvent({ type: "response.cancel" });
-      this.responseInProgress = false;
     }
   },
   
@@ -561,7 +557,6 @@ module.exports = NodeHelper.create({
     }
     
     this.realtimeConnected = false;
-    this.responseInProgress = false;
     
     if (this.audioFlushInterval) {
       clearInterval(this.audioFlushInterval);
