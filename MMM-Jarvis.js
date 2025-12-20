@@ -3,11 +3,7 @@ Module.register("MMM-Jarvis", {
     picovoiceKey: "", // Required for Porcupine
     openaiKey: "", // Required for OpenAI
     wakeWord: "Jarvis", // Porcupine keyword
-    debug: true,
-    // Realtime API options
-    useRealtimeAPI: false, // Set to true to use OpenAI Realtime API (lower latency)
-    realtimeModel: "gpt-4o-realtime-preview-2024-12-17", // Realtime model to use
-    realtimeVoice: "ash" // Voice for Realtime API: alloy, ash, ballad, coral, echo, sage, shimmer, verse
+    debug: true
   },
 
   start: function () {
