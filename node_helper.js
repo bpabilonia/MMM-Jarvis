@@ -8,7 +8,6 @@ let OpenAI = null;
 let Porcupine = null;
 let BuiltinKeyword = null;
 let recorder = null;
-let WebSocket = null;
 
 module.exports = NodeHelper.create({
   start: function () {
@@ -20,14 +19,6 @@ module.exports = NodeHelper.create({
     this.conversationHistory = []; // Store conversation context
     this.pendingRecording = null; // Track active recording process
     
-    // Realtime API state
-    this.realtimeWs = null;
-    this.realtimeConnected = false;
-    this.realtimeAudioBuffer = [];
-    this.realtimeStreamingMic = null;
-    this.audioPlayer = null;
-    this.audioChunks = [];
-    
     // Attempt to load dependencies
     try {
         OpenAI = require("openai");
@@ -35,7 +26,6 @@ module.exports = NodeHelper.create({
         Porcupine = PorcupineModule.Porcupine;
         BuiltinKeyword = PorcupineModule.BuiltinKeyword;
         recorder = require("node-record-lpcm16");
-        WebSocket = require("ws");
         console.log("MMM-Jarvis: Dependencies loaded successfully.");
     } catch (e) {
         console.error("MMM-Jarvis: Failed to load dependencies. Make sure to run 'npm install' in the module directory.", e);
@@ -61,20 +51,8 @@ module.exports = NodeHelper.create({
       return;
     }
 
-    // Check WebSocket availability if realtime mode is requested
-    if (this.config.useRealtimeAPI && !WebSocket) {
-      console.error("MMM-Jarvis: Cannot use Realtime API, WebSocket dependency is missing. Run 'npm install' to install the 'ws' package.");
-      return;
-    }
-
     try {
         this.openai = new OpenAI({ apiKey: this.config.openaiKey });
-        this.useRealtimeAPI = this.config.useRealtimeAPI || false;
-        this.realtimeModel = this.config.realtimeModel || "gpt-4o-realtime-preview-2024-12-17";
-        this.realtimeVoice = this.config.realtimeVoice || "ash";
-        
-        console.log(`MMM-Jarvis: Mode - ${this.useRealtimeAPI ? 'Realtime API' : 'Standard API'}`);
-        
         this.initPorcupine();
         this.startWakeWordListener();
     } catch (e) {
@@ -182,13 +160,7 @@ module.exports = NodeHelper.create({
       this.playAckSound();
       
       this.micStream.stop(); 
-      
-      // Use Realtime API or standard flow
-      if (this.useRealtimeAPI) {
-          this.startRealtimeSession();
-      } else {
-          this.recordCommand();
-      }
+      this.recordCommand();
     }
   },
   
@@ -210,363 +182,6 @@ module.exports = NodeHelper.create({
       beepCmd.unref();
     }
   },
-
-  // ============================================
-  // REALTIME API IMPLEMENTATION
-  // ============================================
-  
-  startRealtimeSession: function() {
-    console.log("MMM-Jarvis: Starting Realtime API session...");
-    
-    const url = `wss://api.openai.com/v1/realtime?model=${this.realtimeModel}`;
-    
-    this.realtimeWs = new WebSocket(url, {
-      headers: {
-        "Authorization": `Bearer ${this.config.openaiKey}`,
-        "OpenAI-Beta": "realtime=v1"
-      }
-    });
-    
-    this.realtimeWs.on("open", () => {
-      console.log("MMM-Jarvis: Realtime WebSocket connected");
-      this.realtimeConnected = true;
-      
-      // Configure the session
-      this.sendRealtimeEvent({
-        type: "session.update",
-        session: {
-          modalities: ["text", "audio"],
-          instructions: "You are Jarvis, a helpful AI assistant on a Magic Mirror. Keep responses brief (1-3 sentences) and natural for spoken output. Avoid lists, markdown, or special formatting. Be conversational and friendly.",
-          voice: this.realtimeVoice,
-          input_audio_format: "pcm16",
-          output_audio_format: "pcm16",
-          input_audio_transcription: {
-            model: "whisper-1"
-          },
-          turn_detection: {
-            type: "server_vad",
-            threshold: 0.5,
-            prefix_padding_ms: 300,
-            silence_duration_ms: 500
-          }
-        }
-      });
-      
-      // Start streaming microphone audio
-      this.startRealtimeAudioStream();
-    });
-    
-    this.realtimeWs.on("message", (data) => {
-      try {
-        const event = JSON.parse(data.toString());
-        this.handleRealtimeEvent(event);
-      } catch (e) {
-        console.error("MMM-Jarvis: Failed to parse Realtime event", e);
-      }
-    });
-    
-    this.realtimeWs.on("error", (err) => {
-      // Only log the error here - cleanup will happen in the close handler
-      // which always fires after an error event
-      console.error("MMM-Jarvis: Realtime WebSocket error", err);
-    });
-    
-    this.realtimeWs.on("close", (code, reason) => {
-      console.log(`MMM-Jarvis: Realtime WebSocket closed. Code: ${code}, Reason: ${reason}`);
-      // Only perform cleanup if this wasn't triggered by our own cleanupRealtimeSession() call
-      // When we initiate cleanup, realtimeWs is set to null before the close event fires
-      if (this.realtimeWs !== null) {
-        this.realtimeConnected = false;
-        // Perform full cleanup for unexpected closes (server disconnect, timeout, etc.)
-        this.cleanupRealtimeSession();
-        this.reset();
-      }
-    });
-  },
-  
-  sendRealtimeEvent: function(event) {
-    if (this.realtimeWs && this.realtimeConnected) {
-      this.realtimeWs.send(JSON.stringify(event));
-    }
-  },
-  
-  startRealtimeAudioStream: function() {
-    console.log("MMM-Jarvis: Starting audio stream to Realtime API...");
-    
-    try {
-      this.realtimeStreamingMic = recorder.record({
-        sampleRate: 24000, // Realtime API uses 24kHz
-        threshold: 0,
-        verbose: false,
-        recordProgram: "rec",
-        silence: "0",
-        channels: 1,
-        audioType: "raw"
-      });
-      
-      const stream = this.realtimeStreamingMic.stream();
-      
-      stream.on("data", (chunk) => {
-        if (this.realtimeConnected) {
-          // Send audio as base64
-          const base64Audio = chunk.toString("base64");
-          this.sendRealtimeEvent({
-            type: "input_audio_buffer.append",
-            audio: base64Audio
-          });
-        }
-      });
-      
-      stream.on("error", (err) => {
-        console.error("MMM-Jarvis: Realtime mic stream error", err);
-        this.cleanupRealtimeSession();
-        this.reset();
-      });
-      
-    } catch (err) {
-      console.error("MMM-Jarvis: Failed to start Realtime audio stream", err);
-      this.cleanupRealtimeSession();
-      this.reset();
-    }
-  },
-  
-  handleRealtimeEvent: function(event) {
-    const eventType = event.type;
-    
-    switch (eventType) {
-      case "session.created":
-        console.log("MMM-Jarvis: Realtime session created");
-        break;
-        
-      case "session.updated":
-        console.log("MMM-Jarvis: Realtime session updated");
-        break;
-        
-      case "input_audio_buffer.speech_started":
-        console.log("MMM-Jarvis: Speech detected");
-        this.sendSocketNotification("STATUS_UPDATE", { status: "LISTENING" });
-        // Interrupt any ongoing audio playback
-        this.stopAudioPlayback();
-        break;
-        
-      case "input_audio_buffer.speech_stopped":
-        console.log("MMM-Jarvis: Speech ended");
-        this.sendSocketNotification("STATUS_UPDATE", { status: "PROCESSING" });
-        break;
-        
-      case "conversation.item.input_audio_transcription.completed":
-        const transcription = event.transcript || "";
-        console.log(`MMM-Jarvis: Transcription: ${transcription}`);
-        if (transcription.trim()) {
-          this.sendSocketNotification("TRANSCRIPTION", { text: transcription });
-          
-          // Check for exit phrases
-          const lowerText = transcription.toLowerCase().trim();
-          if (lowerText.includes("stop conversation") || 
-              lowerText.includes("thank you jarvis") ||
-              lowerText.includes("goodbye jarvis") ||
-              lowerText.includes("that's all")) {
-            this.cleanupRealtimeSession();
-            this.reset();
-            return;
-          }
-        }
-        break;
-        
-      case "response.created":
-        console.log("MMM-Jarvis: Response started");
-        this.sendSocketNotification("RESPONSE_START");
-        this.audioChunks = [];
-        break;
-        
-      case "response.text.delta":
-        const textDelta = event.delta || "";
-        if (textDelta) {
-          this.sendSocketNotification("RESPONSE_CHUNK", { text: textDelta });
-        }
-        break;
-        
-      case "response.audio_transcript.delta":
-        const transcriptDelta = event.delta || "";
-        if (transcriptDelta) {
-          this.sendSocketNotification("RESPONSE_CHUNK", { text: transcriptDelta });
-        }
-        break;
-        
-      case "response.audio.delta":
-        // Collect audio chunks
-        if (event.delta) {
-          const audioData = Buffer.from(event.delta, "base64");
-          this.audioChunks.push(audioData);
-          
-          // Start playback if no player is active (first chunk or after player failure)
-          if (!this.audioPlayer) {
-            this.sendSocketNotification("STATUS_UPDATE", { status: "SPEAKING" });
-            this.startAudioPlayback();
-          }
-        }
-        break;
-        
-      case "response.audio.done":
-        console.log("MMM-Jarvis: Audio response complete");
-        break;
-        
-      case "response.done":
-        console.log("MMM-Jarvis: Response complete");
-        // Audio playback will continue, then we'll be ready for next input
-        break;
-        
-      case "error":
-        console.error("MMM-Jarvis: Realtime API error:", event.error);
-        this.sendSocketNotification("STATUS_UPDATE", { status: "ERROR" });
-        // Clean up and reset on API errors, consistent with standard mode behavior
-        this.cleanupRealtimeSession();
-        this.reset();
-        break;
-        
-      case "rate_limits.updated":
-        // Rate limit info, can be logged if needed
-        break;
-        
-      default:
-        if (this.config.debug) {
-          console.log(`MMM-Jarvis: Unhandled event type: ${eventType}`);
-        }
-    }
-  },
-  
-  startAudioPlayback: function() {
-    // Create a streaming audio player for PCM16 24kHz mono
-    // Use sox to convert raw PCM to playable audio
-    const playCmd = process.platform === "darwin" ? "play" : "aplay";
-    const playArgs = process.platform === "darwin" 
-      ? ["-t", "raw", "-r", "24000", "-e", "signed-integer", "-b", "16", "-c", "1", "-"]
-      : ["-f", "S16_LE", "-r", "24000", "-c", "1", "-"];
-    
-    this.audioPlayer = spawn(playCmd, playArgs);
-    
-    this.audioPlayer.stdin.on("error", (err) => {
-      if (err.code !== "EPIPE") {
-        console.error("MMM-Jarvis: Audio player stdin error", err);
-      }
-    });
-    
-    this.audioPlayer.on("close", (code) => {
-      console.log("MMM-Jarvis: Audio playback finished");
-      this.audioPlayer = null;
-      // Clear the flush interval so a new one can be created for the next response
-      if (this.audioFlushInterval) {
-        clearInterval(this.audioFlushInterval);
-        this.audioFlushInterval = null;
-      }
-      // Ready for next utterance
-      this.sendSocketNotification("STATUS_UPDATE", { status: "LISTENING" });
-    });
-    
-    this.audioPlayer.on("error", (err) => {
-      console.error("MMM-Jarvis: Audio player error", err);
-      this.audioPlayer = null;
-      // Clear the flush interval on error as well
-      if (this.audioFlushInterval) {
-        clearInterval(this.audioFlushInterval);
-        this.audioFlushInterval = null;
-      }
-      // Clear pending audio chunks
-      this.audioChunks = [];
-      // Update status so user isn't stuck waiting
-      this.sendSocketNotification("STATUS_UPDATE", { status: "LISTENING" });
-    });
-    
-    // Start writing buffered audio
-    this.flushAudioBuffer();
-  },
-  
-  flushAudioBuffer: function() {
-    if (!this.audioPlayer || !this.audioPlayer.stdin.writable) return;
-    
-    while (this.audioChunks.length > 0) {
-      const chunk = this.audioChunks.shift();
-      try {
-        this.audioPlayer.stdin.write(chunk);
-      } catch (e) {
-        break;
-      }
-    }
-    
-    // Set up interval to flush new chunks as they arrive
-    if (!this.audioFlushInterval) {
-      this.audioFlushInterval = setInterval(() => {
-        if (this.audioChunks.length > 0 && this.audioPlayer && this.audioPlayer.stdin.writable) {
-          while (this.audioChunks.length > 0) {
-            const chunk = this.audioChunks.shift();
-            try {
-              this.audioPlayer.stdin.write(chunk);
-            } catch (e) {
-              break;
-            }
-          }
-        }
-      }, 50);
-    }
-  },
-  
-  stopAudioPlayback: function() {
-    if (this.audioFlushInterval) {
-      clearInterval(this.audioFlushInterval);
-      this.audioFlushInterval = null;
-    }
-    
-    if (this.audioPlayer) {
-      try {
-        this.audioPlayer.stdin.end();
-        this.audioPlayer.kill();
-      } catch (e) {
-        // Ignore errors when stopping
-      }
-      this.audioPlayer = null;
-    }
-    
-    this.audioChunks = [];
-    
-    // Cancel any in-progress response
-    if (this.realtimeConnected) {
-      this.sendRealtimeEvent({ type: "response.cancel" });
-    }
-  },
-  
-  cleanupRealtimeSession: function() {
-    console.log("MMM-Jarvis: Cleaning up Realtime session...");
-    
-    // Stop audio streaming
-    if (this.realtimeStreamingMic) {
-      try {
-        this.realtimeStreamingMic.stop();
-      } catch (e) {}
-      this.realtimeStreamingMic = null;
-    }
-    
-    // Stop audio playback
-    this.stopAudioPlayback();
-    
-    // Close WebSocket
-    if (this.realtimeWs) {
-      try {
-        this.realtimeWs.close();
-      } catch (e) {}
-      this.realtimeWs = null;
-    }
-    
-    this.realtimeConnected = false;
-    
-    if (this.audioFlushInterval) {
-      clearInterval(this.audioFlushInterval);
-      this.audioFlushInterval = null;
-    }
-  },
-
-  // ============================================
-  // STANDARD API IMPLEMENTATION (Original)
-  // ============================================
 
   recordCommand: function () {
     console.log("MMM-Jarvis: Recording command...");
@@ -804,11 +419,6 @@ module.exports = NodeHelper.create({
   },
 
   reset: function () {
-    // Cleanup Realtime session if active
-    if (this.useRealtimeAPI) {
-      this.cleanupRealtimeSession();
-    }
-    
     this.isListening = false;
     this.conversationHistory = []; // Clear history on full reset
     this.sendSocketNotification("RESPONSE_END"); // Signal UI to go IDLE and clear text
