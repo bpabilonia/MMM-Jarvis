@@ -100,15 +100,11 @@ module.exports = NodeHelper.create({
     // This can actually control brightness on supported monitors
     try {
       execSync("which ddcutil", { stdio: 'ignore' });
-      // Test if ddcutil can actually control brightness
-      try {
-        execSync("ddcutil getvcp 10", { stdio: 'ignore', timeout: 2000 });
-        this.brightnessMethod = 'ddcutil';
-        console.log("MMM-Jarvis: ✓ Using ddcutil for brightness control (DDC/CI)");
-        return;
-      } catch (e) {
-        console.log("MMM-Jarvis: ddcutil found but may not support this display");
-      }
+      // ddcutil can be slow on first run, so we'll just check if it exists
+      // and defer the actual test to when we try to use it
+      this.brightnessMethod = 'ddcutil';
+      console.log("MMM-Jarvis: ✓ Using ddcutil for brightness control (DDC/CI)");
+      return;
     } catch (e) {
       // ddcutil not available
     }
@@ -143,7 +139,33 @@ module.exports = NodeHelper.create({
       }
     }
     
-    // Method 4: Check for xrandr (X11 displays)
+    // Method 4: Check for brightnessctl (common on modern Linux/Wayland)
+    try {
+      execSync("which brightnessctl", { stdio: 'ignore' });
+      // Test if it can actually get brightness
+      try {
+        execSync("brightnessctl get", { stdio: 'ignore', timeout: 2000 });
+        this.brightnessMethod = 'brightnessctl';
+        console.log("MMM-Jarvis: ✓ Using brightnessctl for brightness control");
+        return;
+      } catch (e) {
+        console.log("MMM-Jarvis: brightnessctl found but no controllable device");
+      }
+    } catch (e) {
+      // brightnessctl not available
+    }
+    
+    // Method 5: Check for wlr-randr (Wayland displays - wlroots based)
+    try {
+      execSync("which wlr-randr", { stdio: 'ignore' });
+      this.brightnessMethod = 'wlr-randr';
+      console.log("MMM-Jarvis: ✓ Using wlr-randr for Wayland brightness control");
+      return;
+    } catch (e) {
+      // wlr-randr not available
+    }
+    
+    // Method 6: Check for xrandr (X11 displays)
     try {
       execSync("which xrandr", { stdio: 'ignore' });
       this.brightnessMethod = 'xrandr';
@@ -153,7 +175,7 @@ module.exports = NodeHelper.create({
       // xrandr not available
     }
     
-    // Method 5: Check for vcgencmd (Raspberry Pi display power control)
+    // Method 7: Check for vcgencmd (Raspberry Pi display power control)
     // Note: vcgencmd can turn display on/off but doesn't control brightness directly
     // This is a last resort since it can't actually control brightness
     try {
@@ -186,6 +208,12 @@ module.exports = NodeHelper.create({
         break;
       case 'ddcutil':
         this.increaseBrightnessDdcutil();
+        break;
+      case 'brightnessctl':
+        this.increaseBrightnessBrightnessctl();
+        break;
+      case 'wlr-randr':
+        this.increaseBrightnessWlrRandr();
         break;
       case 'xrandr':
         this.increaseBrightnessXrandr();
@@ -242,36 +270,78 @@ module.exports = NodeHelper.create({
     }
   },
 
+  increaseBrightnessBrightnessctl: function () {
+    // Use brightnessctl to set brightness to 90%
+    exec("brightnessctl set 90%", (error, stdout, stderr) => {
+      if (error) {
+        console.error(`MMM-Jarvis: brightnessctl failed: ${error.message}`);
+        return;
+      }
+      console.log("MMM-Jarvis: ✓ Brightness set to 90% via brightnessctl");
+    });
+  },
+
   increaseBrightnessDdcutil: function () {
     // Use ddcutil to control brightness via DDC/CI (VCP code 10 = brightness)
-    // First get current brightness, then set to 90%
-    exec("ddcutil getvcp 10", (error, stdout, stderr) => {
-      if (error) {
-        // ddcutil failed - monitor may not support DDC/CI
+    // Using sudo to bypass polkit authentication dialog
+    console.log("MMM-Jarvis: Detecting display via ddcutil...");
+    
+    // First, detect the display to get the bus number
+    exec("sudo ddcutil detect", { timeout: 15000 }, (detectError, detectStdout, detectStderr) => {
+      if (detectError) {
+        console.error(`MMM-Jarvis: ddcutil detect failed: ${detectError.message}`);
         return;
       }
       
-      // Parse current brightness from output like "VCP 10 C 50 100"
-      // Format: VCP code current max
-      const match = stdout.match(/VCP\s+10\s+\w+\s+(\d+)\s+(\d+)/);
-      if (match) {
-        const currentBrightness = parseInt(match[1], 10);
-        const maxBrightness = parseInt(match[2], 10);
-        const targetBrightness = Math.floor(maxBrightness * 0.9);
-        
-        if (currentBrightness < targetBrightness) {
-          // Set brightness to 90%
-          exec(`ddcutil setvcp 10 ${targetBrightness}`, (setError, setStdout, setStderr) => {
-            if (setError) {
-              console.error(`MMM-Jarvis: ddcutil setvcp failed: ${setError.message}`);
-            } else {
-              console.log(`MMM-Jarvis: ✓ Brightness set to ${targetBrightness} (90%) via ddcutil`);
-            }
-          });
-        } else {
-          console.log(`MMM-Jarvis: Brightness already adequate (${currentBrightness}/${maxBrightness})`);
-        }
+      // Parse bus number from output like "I2C bus:  /dev/i2c-21"
+      const busMatch = detectStdout.match(/I2C bus:\s*\/dev\/i2c-(\d+)/);
+      const busNumber = busMatch ? busMatch[1] : null;
+      
+      if (!busNumber) {
+        console.error("MMM-Jarvis: Could not detect I2C bus for display");
+        return;
       }
+      
+      console.log(`MMM-Jarvis: Found display on I2C bus ${busNumber}`);
+      
+      // Get current brightness using sudo and the specific bus
+      exec(`sudo ddcutil getvcp 10 --bus ${busNumber}`, { timeout: 10000 }, (error, stdout, stderr) => {
+        if (error) {
+          console.error(`MMM-Jarvis: ddcutil getvcp failed: ${error.message}`);
+          return;
+        }
+        
+        console.log(`MMM-Jarvis: ddcutil output: ${stdout.trim()}`);
+        
+        // Parse current brightness from output like:
+        // "VCP code 0x10 (Brightness): current value = 75, max value = 100"
+        const match = stdout.match(/current value\s*=\s*(\d+).*max value\s*=\s*(\d+)/i);
+        if (match) {
+          const currentBrightness = parseInt(match[1], 10);
+          const maxBrightness = parseInt(match[2], 10);
+          // Use 75% to avoid Dell "Energy Smart" confirmation dialog
+          // Dell monitors show a prompt when setting brightness above 75%
+          const targetBrightness = Math.floor(maxBrightness * 0.75);
+          
+          console.log(`MMM-Jarvis: Current: ${currentBrightness}, Max: ${maxBrightness}, Target: ${targetBrightness}`);
+          
+          if (currentBrightness < targetBrightness) {
+            // Set brightness to 75% using sudo and the specific bus
+            console.log(`MMM-Jarvis: Setting brightness to ${targetBrightness}...`);
+            exec(`sudo ddcutil setvcp 10 ${targetBrightness} --bus ${busNumber}`, { timeout: 10000 }, (setError, setStdout, setStderr) => {
+              if (setError) {
+                console.error(`MMM-Jarvis: ddcutil setvcp failed: ${setError.message}`);
+              } else {
+                console.log(`MMM-Jarvis: ✓ Brightness set to ${targetBrightness}% via ddcutil`);
+              }
+            });
+          } else {
+            console.log(`MMM-Jarvis: Brightness already adequate (${currentBrightness} >= ${targetBrightness})`);
+          }
+        } else {
+          console.error(`MMM-Jarvis: Could not parse ddcutil output: ${stdout}`);
+        }
+      });
     });
   },
 
@@ -301,6 +371,51 @@ module.exports = NodeHelper.create({
         });
       } else {
         this.setXrandrBrightness(displayName.trim());
+      }
+    });
+  },
+
+  increaseBrightnessWlrRandr: function () {
+    // For Wayland displays using wlroots-based compositors (like labwc, sway, wayfire)
+    // wlr-randr doesn't have a direct brightness control, but we can use it to ensure
+    // the display is enabled. For actual brightness, we try multiple approaches.
+    
+    // First, try to ensure display is on
+    exec("wlr-randr", (error, stdout, stderr) => {
+      if (error) {
+        console.error(`MMM-Jarvis: wlr-randr failed: ${error.message}`);
+        return;
+      }
+      
+      // Parse output to get display name
+      const lines = stdout.split('\n');
+      const displayLine = lines.find(l => !l.startsWith(' ') && l.trim().length > 0);
+      
+      if (displayLine) {
+        const displayName = displayLine.trim();
+        console.log(`MMM-Jarvis: Found Wayland display: ${displayName}`);
+        
+        // Try to enable the display (in case it was disabled)
+        exec(`wlr-randr --output ${displayName} --on`, (enableError) => {
+          if (enableError) {
+            console.error(`MMM-Jarvis: wlr-randr enable failed: ${enableError.message}`);
+          } else {
+            console.log(`MMM-Jarvis: ✓ Display ${displayName} enabled via wlr-randr`);
+          }
+        });
+        
+        // Also try brightnessctl if available (works on some Wayland setups)
+        exec("which brightnessctl", (bcError) => {
+          if (!bcError) {
+            exec("brightnessctl set 90%", (setError, setStdout, setStderr) => {
+              if (setError) {
+                console.log(`MMM-Jarvis: brightnessctl not available for this display`);
+              } else {
+                console.log(`MMM-Jarvis: ✓ Brightness set to 90% via brightnessctl`);
+              }
+            });
+          }
+        });
       }
     });
   },

@@ -81,8 +81,10 @@ The module automatically increases display brightness when the wake word is dete
 
 1. **sysfs** (`/sys/class/backlight/`) - For official Raspberry Pi touchscreen displays
 2. **ddcutil** - For HDMI displays with DDC/CI support (can actually control brightness!)
-3. **xrandr** - For X11 displays (if running in X11 environment)
-4. **vcgencmd** - For HDMI displays (can turn display on/off, but not control brightness levels)
+3. **brightnessctl** - Common on modern Linux (Wayland and X11)
+4. **wlr-randr** - For Wayland displays (wlroots-based compositors)
+5. **xrandr** - For X11 displays
+6. **vcgencmd** - For HDMI displays (can turn display on/off, but not control brightness levels)
 
 #### For Official Pi Touchscreen (sysfs method):
 
@@ -112,16 +114,42 @@ sudo apt-get update
 sudo apt-get install ddcutil
 ```
 
-You may also need to enable I2C:
+Enable I2C:
 ```bash
 sudo raspi-config
 # Navigate to: Interface Options → I2C → Enable
+```
+
+**Important:** Allow ddcutil to run without password prompts:
+```bash
+# Create sudoers rule for ddcutil (replace 'pi' with your username)
+sudo bash -c 'echo "pi ALL=(ALL) NOPASSWD: /usr/bin/ddcutil" > /etc/sudoers.d/ddcutil'
+sudo chmod 440 /etc/sudoers.d/ddcutil
+
+# Reboot
 sudo reboot
 ```
 
-**Option 2: If ddcutil doesn't work**
+Test that it works without a dialog:
+```bash
+sudo ddcutil setvcp 10 90
+```
 
-If your monitor doesn't support DDC/CI, the module will fall back to `vcgencmd` which can only turn the display on/off (not control brightness). In this case, brightness must be controlled using the display's hardware buttons or menu.
+**Option 2: Install brightnessctl (for Wayland/modern Linux)**
+
+```bash
+sudo apt-get install brightnessctl
+```
+
+**Option 3: Install wlr-randr (for Wayland)**
+
+```bash
+sudo apt-get install wlr-randr
+```
+
+**Option 4: If none of these work**
+
+If your monitor doesn't support any of these methods, the module will fall back to `vcgencmd` which can only turn the display on/off (not control brightness). In this case, brightness must be controlled using the display's hardware buttons or menu.
 
 **Note:** Check the MagicMirror logs to see which brightness control method was detected. The module will log which method is being used (or if none is available).
 
