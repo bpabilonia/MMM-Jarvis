@@ -80,8 +80,9 @@ The module automatically increases display brightness when the wake word is dete
 #### Supported Methods:
 
 1. **sysfs** (`/sys/class/backlight/`) - For official Raspberry Pi touchscreen displays
-2. **vcgencmd** - For HDMI displays (can turn display on/off, but not control brightness levels)
+2. **ddcutil** - For HDMI displays with DDC/CI support (can actually control brightness!)
 3. **xrandr** - For X11 displays (if running in X11 environment)
+4. **vcgencmd** - For HDMI displays (can turn display on/off, but not control brightness levels)
 
 #### For Official Pi Touchscreen (sysfs method):
 
@@ -102,7 +103,25 @@ pi ALL=(ALL) NOPASSWD: /bin/tee /sys/class/backlight/*/brightness
 
 #### For HDMI Displays:
 
-HDMI displays typically don't support software brightness control from the Raspberry Pi. The module will attempt to ensure the display is powered on using `vcgencmd`, but brightness levels are usually controlled by the display itself.
+**Option 1: Install ddcutil for DDC/CI brightness control (Recommended)**
+
+Many modern HDMI monitors support DDC/CI, which allows software brightness control. Install `ddcutil`:
+
+```bash
+sudo apt-get update
+sudo apt-get install ddcutil
+```
+
+You may also need to enable I2C:
+```bash
+sudo raspi-config
+# Navigate to: Interface Options → I2C → Enable
+sudo reboot
+```
+
+**Option 2: If ddcutil doesn't work**
+
+If your monitor doesn't support DDC/CI, the module will fall back to `vcgencmd` which can only turn the display on/off (not control brightness). In this case, brightness must be controlled using the display's hardware buttons or menu.
 
 **Note:** Check the MagicMirror logs to see which brightness control method was detected. The module will log which method is being used (or if none is available).
 

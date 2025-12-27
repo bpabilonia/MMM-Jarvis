@@ -96,19 +96,54 @@ module.exports = NodeHelper.create({
       }
     }
     
-    // Method 2: Check for vcgencmd (Raspberry Pi display power control)
-    // Note: vcgencmd can turn display on/off but doesn't control brightness directly
-    // However, we can use it to ensure display is on
+    // Method 2: Check for ddcutil (DDC/CI brightness control for HDMI displays)
+    // This can actually control brightness on supported monitors
     try {
-      execSync("which vcgencmd", { stdio: 'ignore' });
-      this.brightnessMethod = 'vcgencmd';
-      console.log("MMM-Jarvis: ✓ Using vcgencmd for display control (power on/off only)");
-      return;
+      execSync("which ddcutil", { stdio: 'ignore' });
+      // Test if ddcutil can actually control brightness
+      try {
+        execSync("ddcutil getvcp 10", { stdio: 'ignore', timeout: 2000 });
+        this.brightnessMethod = 'ddcutil';
+        console.log("MMM-Jarvis: ✓ Using ddcutil for brightness control (DDC/CI)");
+        return;
+      } catch (e) {
+        console.log("MMM-Jarvis: ddcutil found but may not support this display");
+      }
     } catch (e) {
-      // vcgencmd not available
+      // ddcutil not available
     }
     
-    // Method 3: Check for xrandr (X11 displays)
+    // Method 3: Check for /sys/class/leds/ (alternative backlight path)
+    const ledsDir = "/sys/class/leds";
+    if (fs.existsSync(ledsDir)) {
+      try {
+        const leds = fs.readdirSync(ledsDir);
+        // Look for backlight-related LEDs
+        const backlightLed = leds.find(l => 
+          l.toLowerCase().includes("backlight") || 
+          l.toLowerCase().includes("lcd") ||
+          l.toLowerCase().includes("display")
+        );
+        
+        if (backlightLed) {
+          const brightnessFile = path.join(ledsDir, backlightLed, "brightness");
+          const maxBrightnessFile = path.join(ledsDir, backlightLed, "max_brightness");
+          
+          if (fs.existsSync(brightnessFile) && fs.existsSync(maxBrightnessFile)) {
+            this.backlightPath = path.join(ledsDir, backlightLed);
+            const maxBrightnessContent = fs.readFileSync(maxBrightnessFile, "utf8").trim();
+            this.maxBrightness = parseInt(maxBrightnessContent, 10) || 255;
+            this.brightnessMethod = 'sysfs';
+            console.log(`MMM-Jarvis: ✓ Using LED backlight control: ${backlightLed}`);
+            return;
+          }
+        }
+      } catch (e) {
+        // LED method failed
+      }
+    }
+    
+    // Method 4: Check for xrandr (X11 displays)
     try {
       execSync("which xrandr", { stdio: 'ignore' });
       this.brightnessMethod = 'xrandr';
@@ -116,6 +151,18 @@ module.exports = NodeHelper.create({
       return;
     } catch (e) {
       // xrandr not available
+    }
+    
+    // Method 5: Check for vcgencmd (Raspberry Pi display power control)
+    // Note: vcgencmd can turn display on/off but doesn't control brightness directly
+    // This is a last resort since it can't actually control brightness
+    try {
+      execSync("which vcgencmd", { stdio: 'ignore' });
+      this.brightnessMethod = 'vcgencmd';
+      console.log("MMM-Jarvis: ⚠ Using vcgencmd (power on/off only, cannot control brightness)");
+      return;
+    } catch (e) {
+      // vcgencmd not available
     }
     
     // If no method found
@@ -137,11 +184,16 @@ module.exports = NodeHelper.create({
       case 'sysfs':
         this.increaseBrightnessSysfs();
         break;
-      case 'vcgencmd':
-        this.increaseBrightnessVcgencmd();
+      case 'ddcutil':
+        this.increaseBrightnessDdcutil();
         break;
       case 'xrandr':
         this.increaseBrightnessXrandr();
+        break;
+      case 'vcgencmd':
+        this.increaseBrightnessVcgencmd();
+        // Also try ddcutil as fallback since vcgencmd can't control brightness
+        this.increaseBrightnessDdcutil();
         break;
       default:
         console.log("MMM-Jarvis: No brightness control method available");
@@ -188,6 +240,39 @@ module.exports = NodeHelper.create({
       console.error(`MMM-Jarvis: Error reading brightness: ${e.message}`);
       this.increaseBrightnessWithSudo(targetBrightness);
     }
+  },
+
+  increaseBrightnessDdcutil: function () {
+    // Use ddcutil to control brightness via DDC/CI (VCP code 10 = brightness)
+    // First get current brightness, then set to 90%
+    exec("ddcutil getvcp 10", (error, stdout, stderr) => {
+      if (error) {
+        // ddcutil failed - monitor may not support DDC/CI
+        return;
+      }
+      
+      // Parse current brightness from output like "VCP 10 C 50 100"
+      // Format: VCP code current max
+      const match = stdout.match(/VCP\s+10\s+\w+\s+(\d+)\s+(\d+)/);
+      if (match) {
+        const currentBrightness = parseInt(match[1], 10);
+        const maxBrightness = parseInt(match[2], 10);
+        const targetBrightness = Math.floor(maxBrightness * 0.9);
+        
+        if (currentBrightness < targetBrightness) {
+          // Set brightness to 90%
+          exec(`ddcutil setvcp 10 ${targetBrightness}`, (setError, setStdout, setStderr) => {
+            if (setError) {
+              console.error(`MMM-Jarvis: ddcutil setvcp failed: ${setError.message}`);
+            } else {
+              console.log(`MMM-Jarvis: ✓ Brightness set to ${targetBrightness} (90%) via ddcutil`);
+            }
+          });
+        } else {
+          console.log(`MMM-Jarvis: Brightness already adequate (${currentBrightness}/${maxBrightness})`);
+        }
+      }
+    });
   },
 
   increaseBrightnessVcgencmd: function () {
