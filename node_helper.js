@@ -18,6 +18,9 @@ module.exports = NodeHelper.create({
     this.audioBuffer = [];
     this.conversationHistory = []; // Store conversation context
     this.pendingRecording = null; // Track active recording process
+    this.backlightPath = null; // Path to backlight brightness control
+    this.maxBrightness = 255; // Default max brightness value
+    this.initBrightnessControl(); // Initialize brightness control
     
     // Attempt to load dependencies
     try {
@@ -57,6 +60,72 @@ module.exports = NodeHelper.create({
         this.startWakeWordListener();
     } catch (e) {
         console.error("MMM-Jarvis: Initialization error", e);
+    }
+  },
+
+  initBrightnessControl: function () {
+    // Find backlight control path on Raspberry Pi
+    const backlightDir = "/sys/class/backlight";
+    
+    if (!fs.existsSync(backlightDir)) {
+      console.log("MMM-Jarvis: No backlight control found (not a Raspberry Pi or no backlight)");
+      return;
+    }
+
+    try {
+      // Find the first available backlight device
+      const devices = fs.readdirSync(backlightDir);
+      if (devices.length === 0) {
+        console.log("MMM-Jarvis: No backlight devices found");
+        return;
+      }
+
+      // Try common device names (rpi_backlight, raspberrypi, etc.)
+      const device = devices.find(d => 
+        d.includes("rpi") || d.includes("raspberrypi") || d.includes("backlight")
+      ) || devices[0];
+
+      this.backlightPath = path.join(backlightDir, device);
+      const brightnessFile = path.join(this.backlightPath, "brightness");
+      const maxBrightnessFile = path.join(this.backlightPath, "max_brightness");
+
+      if (fs.existsSync(brightnessFile) && fs.existsSync(maxBrightnessFile)) {
+        // Read max brightness value
+        const maxBrightnessContent = fs.readFileSync(maxBrightnessFile, "utf8").trim();
+        this.maxBrightness = parseInt(maxBrightnessContent, 10) || 255;
+        console.log(`MMM-Jarvis: Brightness control initialized (max: ${this.maxBrightness})`);
+      } else {
+        console.log("MMM-Jarvis: Brightness files not found");
+        this.backlightPath = null;
+      }
+    } catch (e) {
+      console.error("MMM-Jarvis: Error initializing brightness control", e);
+      this.backlightPath = null;
+    }
+  },
+
+  increaseBrightness: function () {
+    if (!this.backlightPath) {
+      return; // Not on Raspberry Pi or no backlight control
+    }
+
+    try {
+      const brightnessFile = path.join(this.backlightPath, "brightness");
+      const currentBrightness = parseInt(fs.readFileSync(brightnessFile, "utf8").trim(), 10);
+      
+      // Threshold: if brightness is below 50% of max, increase it
+      const threshold = Math.floor(this.maxBrightness * 0.5);
+      
+      if (currentBrightness < threshold) {
+        // Set brightness to 100% (or 90% to avoid eye strain)
+        const targetBrightness = Math.floor(this.maxBrightness * 0.9);
+        fs.writeFileSync(brightnessFile, targetBrightness.toString());
+        console.log(`MMM-Jarvis: Brightness increased from ${currentBrightness} to ${targetBrightness}`);
+      } else {
+        console.log(`MMM-Jarvis: Brightness already adequate (${currentBrightness}/${this.maxBrightness})`);
+      }
+    } catch (e) {
+      console.error("MMM-Jarvis: Error adjusting brightness", e);
     }
   },
 
@@ -153,6 +222,9 @@ module.exports = NodeHelper.create({
       console.log("MMM-Jarvis: Wake word detected!");
       this.isListening = true;
       
+      // Increase brightness if screen is dimmed
+      this.increaseBrightness();
+      
       // Immediately notify UI - before stopping mic for faster feedback
       this.sendSocketNotification("STATUS_UPDATE", { status: "LISTENING" });
       
@@ -185,6 +257,10 @@ module.exports = NodeHelper.create({
 
   recordCommand: function () {
     console.log("MMM-Jarvis: Recording command...");
+    
+    // Ensure brightness is up when starting to record (for continuous conversation)
+    this.increaseBrightness();
+    
     const filePath = path.join(__dirname, "command.wav");
     
     // Optimized silence detection:
