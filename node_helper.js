@@ -1,7 +1,7 @@
 const NodeHelper = require("node_helper");
 const fs = require("fs");
 const path = require("path");
-const { spawn, exec } = require("child_process");
+const { spawn, exec, execSync } = require("child_process");
 
 // Lazy load dependencies to prevent crash on load if missing
 let OpenAI = null;
@@ -20,6 +20,7 @@ module.exports = NodeHelper.create({
     this.pendingRecording = null; // Track active recording process
     this.backlightPath = null; // Path to backlight brightness control
     this.maxBrightness = 255; // Default max brightness value
+    this.brightnessMethod = null; // 'sysfs', 'vcgencmd', 'xrandr', or null
     this.initBrightnessControl(); // Initialize brightness control
     
     // Attempt to load dependencies
@@ -64,69 +65,228 @@ module.exports = NodeHelper.create({
   },
 
   initBrightnessControl: function () {
-    // Find backlight control path on Raspberry Pi
-    const backlightDir = "/sys/class/backlight";
+    // Try multiple methods to find brightness control
+    console.log("MMM-Jarvis: Initializing brightness control...");
     
-    if (!fs.existsSync(backlightDir)) {
-      console.log("MMM-Jarvis: No backlight control found (not a Raspberry Pi or no backlight)");
-      return;
+    // Method 1: Try /sys/class/backlight (for official Pi touchscreen)
+    const backlightDir = "/sys/class/backlight";
+    if (fs.existsSync(backlightDir)) {
+      try {
+        const devices = fs.readdirSync(backlightDir);
+        if (devices.length > 0) {
+          const device = devices.find(d => 
+            d.includes("rpi") || d.includes("raspberrypi") || d.includes("backlight")
+          ) || devices[0];
+          
+          this.backlightPath = path.join(backlightDir, device);
+          const brightnessFile = path.join(this.backlightPath, "brightness");
+          const maxBrightnessFile = path.join(this.backlightPath, "max_brightness");
+          
+          if (fs.existsSync(brightnessFile) && fs.existsSync(maxBrightnessFile)) {
+            const maxBrightnessContent = fs.readFileSync(maxBrightnessFile, "utf8").trim();
+            this.maxBrightness = parseInt(maxBrightnessContent, 10) || 255;
+            const currentBrightness = fs.readFileSync(brightnessFile, "utf8").trim();
+            this.brightnessMethod = 'sysfs';
+            console.log(`MMM-Jarvis: ✓ Brightness control initialized via sysfs (current: ${currentBrightness}, max: ${this.maxBrightness})`);
+            return;
+          }
+        }
+      } catch (e) {
+        console.log(`MMM-Jarvis: sysfs method failed: ${e.message}`);
+      }
     }
-
+    
+    // Method 2: Check for vcgencmd (Raspberry Pi display power control)
+    // Note: vcgencmd can turn display on/off but doesn't control brightness directly
+    // However, we can use it to ensure display is on
     try {
-      // Find the first available backlight device
-      const devices = fs.readdirSync(backlightDir);
-      if (devices.length === 0) {
-        console.log("MMM-Jarvis: No backlight devices found");
-        return;
-      }
-
-      // Try common device names (rpi_backlight, raspberrypi, etc.)
-      const device = devices.find(d => 
-        d.includes("rpi") || d.includes("raspberrypi") || d.includes("backlight")
-      ) || devices[0];
-
-      this.backlightPath = path.join(backlightDir, device);
-      const brightnessFile = path.join(this.backlightPath, "brightness");
-      const maxBrightnessFile = path.join(this.backlightPath, "max_brightness");
-
-      if (fs.existsSync(brightnessFile) && fs.existsSync(maxBrightnessFile)) {
-        // Read max brightness value
-        const maxBrightnessContent = fs.readFileSync(maxBrightnessFile, "utf8").trim();
-        this.maxBrightness = parseInt(maxBrightnessContent, 10) || 255;
-        console.log(`MMM-Jarvis: Brightness control initialized (max: ${this.maxBrightness})`);
-      } else {
-        console.log("MMM-Jarvis: Brightness files not found");
-        this.backlightPath = null;
-      }
+      execSync("which vcgencmd", { stdio: 'ignore' });
+      this.brightnessMethod = 'vcgencmd';
+      console.log("MMM-Jarvis: ✓ Using vcgencmd for display control (power on/off only)");
+      return;
     } catch (e) {
-      console.error("MMM-Jarvis: Error initializing brightness control", e);
+      // vcgencmd not available
+    }
+    
+    // Method 3: Check for xrandr (X11 displays)
+    try {
+      execSync("which xrandr", { stdio: 'ignore' });
+      this.brightnessMethod = 'xrandr';
+      console.log("MMM-Jarvis: ✓ Using xrandr for display control");
+      return;
+    } catch (e) {
+      // xrandr not available
+    }
+    
+    // If no method found
+    if (!this.brightnessMethod) {
+      console.log("MMM-Jarvis: ⚠ No brightness control method found");
+      console.log("MMM-Jarvis:   This is normal for HDMI displays - brightness control may not be available");
       this.backlightPath = null;
     }
   },
 
   increaseBrightness: function () {
+    if (!this.brightnessMethod) {
+      // No brightness control available - silently skip (this is normal for HDMI displays)
+      return;
+    }
+    
+    // Route to appropriate method based on what was detected
+    switch (this.brightnessMethod) {
+      case 'sysfs':
+        this.increaseBrightnessSysfs();
+        break;
+      case 'vcgencmd':
+        this.increaseBrightnessVcgencmd();
+        break;
+      case 'xrandr':
+        this.increaseBrightnessXrandr();
+        break;
+      default:
+        console.log("MMM-Jarvis: No brightness control method available");
+    }
+  },
+
+  increaseBrightnessSysfs: function () {
     if (!this.backlightPath) {
-      return; // Not on Raspberry Pi or no backlight control
+      return;
     }
 
+    const brightnessFile = path.join(this.backlightPath, "brightness");
+    const targetBrightness = Math.floor(this.maxBrightness * 0.9);
+    
     try {
-      const brightnessFile = path.join(this.backlightPath, "brightness");
       const currentBrightness = parseInt(fs.readFileSync(brightnessFile, "utf8").trim(), 10);
+      console.log(`MMM-Jarvis: Current brightness: ${currentBrightness}/${this.maxBrightness}, target: ${targetBrightness}`);
       
-      // Threshold: if brightness is below 50% of max, increase it
-      const threshold = Math.floor(this.maxBrightness * 0.5);
-      
-      if (currentBrightness < threshold) {
-        // Set brightness to 100% (or 90% to avoid eye strain)
-        const targetBrightness = Math.floor(this.maxBrightness * 0.9);
-        fs.writeFileSync(brightnessFile, targetBrightness.toString());
-        console.log(`MMM-Jarvis: Brightness increased from ${currentBrightness} to ${targetBrightness}`);
+      if (currentBrightness < targetBrightness) {
+        try {
+          fs.writeFileSync(brightnessFile, targetBrightness.toString(), { encoding: 'utf8' });
+          
+          setTimeout(() => {
+            try {
+              const verifyBrightness = parseInt(fs.readFileSync(brightnessFile, "utf8").trim(), 10);
+              if (verifyBrightness === targetBrightness || verifyBrightness >= targetBrightness * 0.95) {
+                console.log(`MMM-Jarvis: ✓ Brightness increased from ${currentBrightness} to ${verifyBrightness}`);
+              } else {
+                console.warn(`MMM-Jarvis: ⚠ Brightness write may have failed (expected ${targetBrightness}, got ${verifyBrightness})`);
+                this.increaseBrightnessWithSudo(targetBrightness);
+              }
+            } catch (verifyError) {
+              this.increaseBrightnessWithSudo(targetBrightness);
+            }
+          }, 100);
+        } catch (writeError) {
+          console.error(`MMM-Jarvis: Direct write failed: ${writeError.message}`);
+          this.increaseBrightnessWithSudo(targetBrightness);
+        }
       } else {
-        console.log(`MMM-Jarvis: Brightness already adequate (${currentBrightness}/${this.maxBrightness})`);
+        console.log(`MMM-Jarvis: Brightness already adequate (${currentBrightness} >= ${targetBrightness})`);
       }
     } catch (e) {
-      console.error("MMM-Jarvis: Error adjusting brightness", e);
+      console.error(`MMM-Jarvis: Error reading brightness: ${e.message}`);
+      this.increaseBrightnessWithSudo(targetBrightness);
     }
+  },
+
+  increaseBrightnessVcgencmd: function () {
+    // vcgencmd can only turn display on/off, not control brightness
+    // But we can ensure the display is powered on
+    exec("vcgencmd display_power 1", (error, stdout, stderr) => {
+      if (error) {
+        console.error(`MMM-Jarvis: vcgencmd display_power failed: ${error.message}`);
+      } else {
+        console.log("MMM-Jarvis: ✓ Display powered on via vcgencmd");
+      }
+    });
+  },
+
+  increaseBrightnessXrandr: function () {
+    // Get the connected display name first
+    exec("xrandr --listmonitors | head -1 | awk '{print $4}'", (error, displayName, stderr) => {
+      if (error || !displayName) {
+        // Fallback: try to get primary display
+        exec("xrandr | grep ' connected' | head -1 | awk '{print $1}'", (error2, displayName2, stderr2) => {
+          if (!error2 && displayName2) {
+            this.setXrandrBrightness(displayName2.trim());
+          } else {
+            console.error("MMM-Jarvis: Could not determine display name for xrandr");
+          }
+        });
+      } else {
+        this.setXrandrBrightness(displayName.trim());
+      }
+    });
+  },
+
+  setXrandrBrightness: function (displayName) {
+    // Set brightness to 0.9 (90%) using xrandr
+    const cmd = `xrandr --output ${displayName} --brightness 0.9`;
+    exec(cmd, (error, stdout, stderr) => {
+      if (error) {
+        console.error(`MMM-Jarvis: xrandr brightness failed: ${error.message}`);
+      } else {
+        console.log(`MMM-Jarvis: ✓ Brightness set to 90% via xrandr on ${displayName}`);
+      }
+    });
+  },
+
+  increaseBrightnessWithSudo: function (targetBrightness) {
+    // Fallback: use shell command to write brightness (more reliable on Raspberry Pi)
+    const brightnessFile = path.join(this.backlightPath, "brightness");
+    
+    // Method 1: Try without sudo first (works if user is in video group)
+    const cmd = `echo ${targetBrightness} > ${brightnessFile}`;
+    
+    exec(cmd, (error, stdout, stderr) => {
+      if (error) {
+        // Method 2: Try with sudo as fallback
+        console.log(`MMM-Jarvis: Shell command failed, trying with sudo...`);
+        const sudoCmd = `echo ${targetBrightness} | sudo tee ${brightnessFile} > /dev/null`;
+        
+        exec(sudoCmd, (sudoError, sudoStdout, sudoStderr) => {
+          if (sudoError) {
+            console.error(`MMM-Jarvis: ✗ All brightness methods failed`);
+            console.error(`MMM-Jarvis: Shell error: ${error.message}`);
+            console.error(`MMM-Jarvis: Sudo error: ${sudoError.message}`);
+            console.error(`MMM-Jarvis: Note: You may need to:`);
+            console.error(`MMM-Jarvis:   1. Add user to video group: sudo usermod -a -G video $USER`);
+            console.error(`MMM-Jarvis:   2. Or configure passwordless sudo for brightness file`);
+            return;
+          }
+          console.log(`MMM-Jarvis: ✓ Brightness set to ${targetBrightness} using sudo method`);
+          
+          // Verify the write worked
+          setTimeout(() => {
+            try {
+              const verifyBrightness = parseInt(fs.readFileSync(brightnessFile, "utf8").trim(), 10);
+              if (verifyBrightness === targetBrightness || verifyBrightness >= targetBrightness * 0.95) {
+                console.log(`MMM-Jarvis: ✓ Verified brightness: ${verifyBrightness}`);
+              } else {
+                console.warn(`MMM-Jarvis: ⚠ Verification mismatch (expected ${targetBrightness}, got ${verifyBrightness})`);
+              }
+            } catch (verifyError) {
+              console.error(`MMM-Jarvis: Error verifying brightness: ${verifyError.message}`);
+            }
+          }, 100);
+        });
+      } else {
+        // Verify the write worked
+        setTimeout(() => {
+          try {
+            const verifyBrightness = parseInt(fs.readFileSync(brightnessFile, "utf8").trim(), 10);
+            if (verifyBrightness === targetBrightness || verifyBrightness >= targetBrightness * 0.95) {
+              console.log(`MMM-Jarvis: ✓ Brightness set to ${verifyBrightness} using shell method`);
+            } else {
+              console.warn(`MMM-Jarvis: ⚠ Shell write may have failed (expected ${targetBrightness}, got ${verifyBrightness})`);
+            }
+          } catch (verifyError) {
+            console.error(`MMM-Jarvis: Error verifying brightness after shell write: ${verifyError.message}`);
+          }
+        }, 100);
+      }
+    });
   },
 
   initPorcupine: function () {
